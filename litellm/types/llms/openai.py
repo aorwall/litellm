@@ -357,6 +357,12 @@ class ChatCompletionCachedContent(TypedDict):
     type: Literal["ephemeral"]
 
 
+class ChatCompletionThinkingBlock(TypedDict, total=False):
+    type: Required[Literal["thinking"]]
+    thinking: str
+    signature_delta: str
+
+
 class OpenAIChatCompletionTextObject(TypedDict):
     type: Literal["text"]
     text: str
@@ -376,6 +382,7 @@ class ChatCompletionImageUrlObject(TypedDict, total=False):
 class ChatCompletionImageObject(TypedDict):
     type: Literal["image_url"]
     image_url: Union[str, ChatCompletionImageUrlObject]
+
 
 class ChatCompletionVideoUrlObject(TypedDict, total=False):
     url: Required[str]
@@ -450,6 +457,7 @@ class OpenAIChatCompletionAssistantMessage(TypedDict, total=False):
 
 class ChatCompletionAssistantMessage(OpenAIChatCompletionAssistantMessage, total=False):
     cache_control: ChatCompletionCachedContent
+    thinking_blocks: Optional[List[ChatCompletionThinkingBlock]]
 
 
 class ChatCompletionToolMessage(TypedDict):
@@ -588,6 +596,9 @@ class ChatCompletionResponseMessage(TypedDict, total=False):
     tool_calls: Optional[List[ChatCompletionToolCallChunk]]
     role: Literal["assistant"]
     function_call: Optional[ChatCompletionToolCallFunctionChunk]
+    provider_specific_fields: Optional[dict]
+    reasoning_content: Optional[str]
+    thinking_blocks: Optional[List[ChatCompletionThinkingBlock]]
 
 
 class ChatCompletionUsageBlock(TypedDict):
