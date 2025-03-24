@@ -119,24 +119,29 @@ class AnthropicConfig(BaseConfig):
         self,
         api_key: str,
         anthropic_version: Optional[str] = None,
-        computer_tool_used: Optional[str] = None,
+        computer_tool_used: bool = False,
         prompt_caching_set: bool = False,
         pdf_used: bool = False,
-        is_vertex_request: bool = False
+        is_vertex_request: bool = False,
+        user_anthropic_beta_headers: Optional[List[str]] = None,
     ) -> dict:
-        betas = []
+
+        betas = set()
         if prompt_caching_set:
-            betas.append("prompt-caching-2024-07-31")
-        if computer_tool_used is not None:
-            betas.append(computer_tool_used)
+            betas.add("prompt-caching-2024-07-31")
+        if computer_tool_used:
+            betas.add("computer-use-2024-10-22")
         if pdf_used:
-            betas.append("pdfs-2024-09-25")
+            betas.add("pdfs-2024-09-25")
         headers = {
             "anthropic-version": anthropic_version or "2023-06-01",
             "x-api-key": api_key,
             "accept": "application/json",
             "content-type": "application/json",
         }
+
+        if user_anthropic_beta_headers is not None:
+            betas.update(user_anthropic_beta_headers)
 
         # Don't send any beta headers to Vertex, Vertex has failed requests when they are sent
         if is_vertex_request is True:
@@ -288,18 +293,6 @@ class AnthropicConfig(BaseConfig):
                 new_stop = new_v
         return new_stop
 
-    def _add_tools_to_optional_params(
-        self, optional_params: dict, tools: List[AllAnthropicToolsValues]
-    ) -> dict:
-        if "tools" not in optional_params:
-            optional_params["tools"] = tools
-        else:
-            optional_params["tools"] = [
-                *optional_params["tools"],
-                *tools,
-            ]
-        return optional_params
-
     def map_openai_params(
         self,
         non_default_params: dict,
@@ -307,7 +300,6 @@ class AnthropicConfig(BaseConfig):
         model: str,
         drop_params: bool,
     ) -> dict:
-
         for param, value in non_default_params.items():
             if param == "max_tokens":
                 optional_params["max_tokens"] = value
@@ -341,6 +333,10 @@ class AnthropicConfig(BaseConfig):
                 optional_params["top_p"] = value
             if param == "response_format" and isinstance(value, dict):
 
+                ignore_response_format_types = ["text"]
+                if value["type"] in ignore_response_format_types:  # value is a no-op
+                    continue
+
                 json_schema: Optional[dict] = None
                 if "response_schema" in value:
                     json_schema = value["response_schema"]
@@ -350,7 +346,7 @@ class AnthropicConfig(BaseConfig):
                 When using tools in this way: - https://docs.anthropic.com/en/docs/build-with-claude/tool-use#json-mode
                 - You usually want to provide a single tool
                 - You should set tool_choice (see Forcing tool use) to instruct the model to explicitly use that tool
-                - Remember that the model will pass the input to the tool, so the name of the tool and description should be from the model's perspective.
+                - Remember that the model will pass the input to the tool, so the name of the tool and description should be from the model’s perspective.
                 """
 
                 _tool_choice = {"name": RESPONSE_FORMAT_TOOL_NAME, "type": "tool"}
@@ -391,7 +387,7 @@ class AnthropicConfig(BaseConfig):
             _input_schema["additionalProperties"] = True
             _input_schema["properties"] = {}
         else:
-            _input_schema["properties"] = {"values": json_schema}
+            _input_schema.update(cast(AnthropicInputSchema, json_schema))
 
         _tool = AnthropicMessagesTool(
             name=RESPONSE_FORMAT_TOOL_NAME, input_schema=_input_schema
@@ -417,29 +413,13 @@ class AnthropicConfig(BaseConfig):
 
     def is_computer_tool_used(
         self, tools: Optional[List[AllAnthropicToolsValues]]
-    ) -> Optional[str]:
-        """
-        Check if computer tools are used and return the appropriate header version.
-        
-        Returns:
-            Optional[str]: The appropriate computer-use header version or None if no computer tools are used.
-        """
+    ) -> bool:
         if tools is None:
-            return None
-            
+            return False
         for tool in tools:
-            if "type" in tool and (
-                tool["type"] in ["bash_20250124", "computer_20250124", "text_editor_20250124"]
-            ):
-                return "computer-use-2025-01-24"
-                
-        for tool in tools:
-            if "type" in tool and (
-                tool["type"] in ["bash_20241022", "computer_20241022", "text_editor_20241022"]
-            ):
-                return "computer-use-2024-10-22"
-    
-        return None
+            if "type" in tool and tool["type"].startswith("computer_"):
+                return True
+        return False
 
     def is_pdf_used(self, messages: List[AllMessageValues]) -> bool:
         """
@@ -807,6 +787,13 @@ class AnthropicConfig(BaseConfig):
             headers=cast(httpx.Headers, headers),
         )
 
+    def _get_user_anthropic_beta_headers(
+        self, anthropic_beta_header: Optional[str]
+    ) -> Optional[List[str]]:
+        if anthropic_beta_header is None:
+            return None
+        return anthropic_beta_header.split(",")
+
     def validate_environment(
         self,
         headers: dict,
@@ -827,18 +814,18 @@ class AnthropicConfig(BaseConfig):
         prompt_caching_set = self.is_cache_control_set(messages=messages)
         computer_tool_used = self.is_computer_tool_used(tools=tools)
         pdf_used = self.is_pdf_used(messages=messages)
-        
+        user_anthropic_beta_headers = self._get_user_anthropic_beta_headers(
+            anthropic_beta_header=headers.get("anthropic-beta")
+        )
         anthropic_headers = self.get_anthropic_headers(
             computer_tool_used=computer_tool_used,
             prompt_caching_set=prompt_caching_set,
             pdf_used=pdf_used,
             api_key=api_key,
             is_vertex_request=optional_params.get("is_vertex_request", False),
+            user_anthropic_beta_headers=user_anthropic_beta_headers,
         )
-        
-        # If anthropic-beta is already in headers, remove it from anthropic_headers to avoid overwriting
-        if "anthropic-beta" in headers and "anthropic-beta" in anthropic_headers:
-            del anthropic_headers["anthropic-beta"]
-        
-        merged_headers = {**headers, **anthropic_headers}
-        return merged_headers
+
+        headers = {**headers, **anthropic_headers}
+
+        return headers
